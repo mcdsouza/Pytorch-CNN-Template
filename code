@@ -1,0 +1,160 @@
+### Step 1: Setup and Imports
+
+```python
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from Bio import PDB
+import numpy as np
+import matplotlib.pyplot as plt
+```
+
+
+- `torch`: The main PyTorch library for tensor computations and neural networks.
+- `torch.nn`: Contains neural network layers and loss functions.
+- `torch.optim`: Provides optimization algorithms like Adam.
+- `torch.utils.data`: Offers utilities for data loading and dataset creation.
+- `Bio.PDB`: Part of BioPython, used for parsing and manipulating protein structure files.
+- `numpy`: For numerical computations and array operations.
+- `matplotlib.pyplot`: For creating visualizations.
+
+### Step 2: Data Preparation
+
+```python
+class ProteinDataset(Dataset):
+    def __init__(self, pdb_files):
+        self.pdb_files = pdb_files
+        self.parser = PDB.PDBParser()
+```
+- This class inherits from `torch.utils.data.Dataset`.
+- `__init__` initializes the dataset with a list of PDB file paths.
+- `self.parser` creates a PDB parser object to read protein structures.
+
+```python
+    def __len__(self):
+        return len(self.pdb_files)
+```
+- Returns the number of PDB files in the dataset.
+
+```python
+    def __getitem__(self, idx):
+        structure = self.parser.get_structure("protein", self.pdb_files[idx])
+        ca_atoms = [atom for atom in structure.get_atoms() if atom.name == 'CA']
+        
+        coords = np.array([atom.coord for atom in ca_atoms])
+        dist_matrix = self.calculate_distance_matrix(coords)
+        
+        return torch.FloatTensor(coords), torch.FloatTensor(dist_matrix)
+```
+- `__getitem__` is called to access items in the dataset.
+- It loads a protein structure from a PDB file.
+- Extracts coordinates of C-alpha atoms.
+- Calculates the distance matrix between C-alpha atoms.
+- Returns the coordinates and distance matrix as PyTorch tensors.
+
+```python
+    def calculate_distance_matrix(self, coords):
+        diff = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
+        return np.sqrt(np.sum(diff**2, axis=-1))
+```
+- Calculates the Euclidean distance matrix between all pairs of C-alpha atoms.
+- Uses NumPy broadcasting to efficiently compute pairwise differences.
+
+### Step 3: Define the Neural Network Model
+
+```python
+class DistancePredictor(nn.Module):
+    def __init__(self):
+        super(DistancePredictor, self).__init__()
+        self.conv1 = nn.Conv1d(3, 64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv1d(128, 256, kernel_size=3, padding=1)
+        self.fc = nn.Linear(256, 256)
+```
+- Defines a neural network model for distance prediction.
+- Uses three 1D convolutional layers to process the input coordinates.
+- Ends with a fully connected layer.
+
+```python
+    def forward(self, x):
+        x = x.permute(0, 2, 1)  # Change shape to (batch, channels, seq_len)
+        x = torch.relu(self.conv1(x))
+        x = torch.relu(self.conv2(x))
+        x = torch.relu(self.conv3(x))
+        x = x.permute(0, 2, 1)  # Change shape back to (batch, seq_len, channels)
+        x = self.fc(x)
+        return torch.matmul(x, x.transpose(1, 2))
+```
+- Defines the forward pass of the network.
+- Applies convolutional layers with ReLU activation.
+- Reshapes the data as needed for convolutions and the final matrix multiplication.
+- Returns the predicted distance matrix.
+
+### Step 4: Training Loop
+
+```python
+def train_model(model, train_loader, num_epochs, learning_rate):
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+```
+- Sets up the training function with Mean Squared Error loss and Adam optimizer.
+
+```python
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0
+        
+        for coords, true_dist in train_loader:
+            optimizer.zero_grad()
+            pred_dist = model(coords)
+            loss = criterion(pred_dist, true_dist)
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+        
+        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss/len(train_loader):.4f}")
+```
+- Iterates through epochs and batches of data.
+- For each batch:
+  - Computes the model's predictions.
+  - Calculates the loss.
+  - Performs backpropagation and updates model parameters.
+- Prints the average loss for each epoch.
+
+### Step 5: Main Execution
+
+```python
+if __name__ == "__main__":
+    pdb_files = ["protein1.pdb", "protein2.pdb", "protein3.pdb"]
+    
+    dataset = ProteinDataset(pdb_files)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+```
+- Creates a dataset from PDB files and a DataLoader for batch processing.
+
+```python
+    model = DistancePredictor()
+    
+    train_model(model, dataloader, num_epochs=50, learning_rate=0.001)
+```
+- Initializes the model and trains it.
+
+```python
+    model.eval()
+    sample_coords, true_dist = dataset[0]
+    with torch.no_grad():
+        pred_dist = model(sample_coords.unsqueeze(0)).squeeze(0)
+```
+- Evaluates the model on a sample protein.
+
+```python
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    ax1.imshow(true_dist, cmap='viridis')
+    ax1.set_title("True Distance Matrix")
+    ax2.imshow(pred_dist, cmap='viridis')
+    ax2.set_title("Predicted Distance Matrix")
+    plt.show()
+```
+- Visualizes the true and predicted distance matrices.
